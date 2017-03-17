@@ -1,0 +1,26 @@
+{
+	"indexer_config":
+		{
+			"method": "q-gram",
+			"index_params": 
+				{
+					"threshold": 0.8,
+					"sub-type": "inverted-index",
+					"size": 2,
+					"keys":
+						{
+							"common": ["age"],
+							"first_record":
+								{
+									"primary": ["first_name"],
+									"secondary": ["last_name"]
+								},
+							"second_record":
+								{
+									"primary": ["fname"],
+									"secondary": ["lname"]
+								}
+						}
+				}
+		}
+}
