@@ -6,7 +6,7 @@ from jsonpath_rw import parse
 from digCrfTokenizer.crf_tokenizer import CrfTokenizer
 
 from similarity import *
-
+from classifier import *
 
 class Core(object):
 
@@ -138,7 +138,7 @@ class Core(object):
             name (str): Name of the resource.
             file_path (str): Path of the feature configuration file. This file should be formatted in json.
 
-        Examples
+        Examples:
             >>> tk.load_feature_configuration('C1', 'feature_config_1.json')
 
             Content of configuration file (please remove all comments before using):
@@ -146,7 +146,7 @@ class Core(object):
             .. code-block:: javascript
 
                 {
-                    // the id_path for id field.
+                    // the id_path for id field. The id should be a string or number.
                     // only need one element if json dicts have the same structure.
                     "id_path": ["id", "index"],
                     // default value for missing result value.
@@ -322,6 +322,80 @@ class Core(object):
                 raise e
             else:  # ignore
                 pass
+
+    def featurize_ground_truth(self, feature_file_path, ground_truth_file_path, output_file_path=None):
+        """
+        Featurize the ground truth by feature vector.
+
+        Args:
+            feature_file_path (str): Json line file of feature vector dicts. \
+                Each json object should contains a field of id with the array of two elements.
+            ground_truth_file_path (str): Json line file of ground truth.\
+                Each json object should contains a field of id with the array of two elements. \
+                It also need to contains a field named `label` for ground truth.
+            output_file_path (str): If it is None, the featurized ground truth will print to STDOUT. \
+                Defaults to None.
+        """
+        def hashed_id(ids):
+            if len(ids) != 2:
+                raise ValueError('Incorrect number of id')
+            sort_ids = sorted(ids)
+
+            # in order to solve the collision in hashing differentiate types of data
+            # and to keep just one level comparison of hash key,
+            # add fixed length of type mark first
+            # here str != unicode (maybe it needs to compare on their base class basestring)
+            return '{0}-{1}-{2}-{3}'\
+                .format(type(ids[0]).__name__, type(ids[1]).__name__, str(ids[0]), str(ids[1]))
+
+        # read ground truth into memory
+        ground_truth = dict()
+        with open(self._get_abs_path(feature_file_path), 'r') as f:
+            for line in f:
+                data = json.loads(line)
+                k, v = hashed_id(data['id']), data['label']
+                ground_truth[k] = v
+
+        # featurize feature file
+        with open(self._get_abs_path(ground_truth_file_path), 'r') as f:
+            for line in f:
+                data = json.loads(line)
+                k = hashed_id(data['id'])
+                if k in ground_truth:
+                    data['label'] = ground_truth[k]
+                    if output_file_path is not None:
+                        with open(self._get_abs_path(output_file_path), 'w') as out:
+                            print >> out, data
+                    else:
+                        print data
+
+    def train_classifier(self, featurized_ground_truth, config):
+        """
+        Using featurized ground truth to train classifier.
+
+        Args:
+            featurized_ground_truth (dict): Array of featurized ground truth json dicts.
+            config (dict): Configuration dict of classifier and parameters includes `function`, \
+                `function_parameters` and `model_parameter`. \
+                It accepts `svm`, `k_neighbors`, `gaussian_process`, `decision_tree`, \
+                `random_forest`, `ada_boost`, `mlp`, `gaussian_naive_bayes`, `quadratic_discriminant_analysis` \
+                as function.
+
+        Returns:
+            Object: Model of the classifier.
+        """
+        x, y = [], []
+        for obj in featurized_ground_truth:
+            x.append(obj['feature_vector'])
+            y += obj['label']
+
+        # train
+        function = get_classifier_class(config['function'])
+        if 'function_parameters' not in config:
+            config['function_parameters'] = {}
+        if 'model_parameters' not in config:
+            config['model_parameters'] = {}
+        return function(**config['function_parameters']).fit(x, y, **config['model_parameters'])
 
     def set_root_path(self, root_path):
         """
@@ -518,7 +592,7 @@ class Core(object):
         """
         return jaro_distance(self, s1, s2)
 
-    def jaro_winkler_similarity(self, s1, s2, threshold=0.7, scaling_factor=0.1):
+    def jaro_winkler_similarity(self, s1, s2, threshold=0.7, scaling_factor=0.1, prefix_len=4):
         """
         The max length for common prefix is 4.
 
@@ -529,6 +603,7 @@ class Core(object):
                 when compared strings have a Jaro Distance above it. Defaults to 0.7.
             scaling_factor (int, optional): Scaling factor for how much the score is adjusted upwards \
                 for having common prefixes. Defaults to 0.1.
+            prefix_len (int): Length of common prefix. Defaults to 4.
 
         Returns:
             float: Jaro Winkler Similarity.
@@ -539,9 +614,9 @@ class Core(object):
             >>> tk.jaro_winkler_similarity('hello', 'world')
             0.4666666666666666
         """
-        return jaro_winkler_similarity(s1, s2, threshold, scaling_factor)
+        return jaro_winkler_similarity(s1, s2, threshold, scaling_factor, prefix_len)
 
-    def jaro_winkler_distance(self, s1, s2, threshold=0.7, scaling_factor=0.1):
+    def jaro_winkler_distance(self, s1, s2, threshold=0.7, scaling_factor=0.1, prefix_len=4):
         """
         Jaro Winkler Distance is computed as 1 - jaro_winkler_similarity.
 
@@ -552,6 +627,7 @@ class Core(object):
                 a Jaro Distance above it. Defaults to 0.7.
             scaling_factor (int, optional): Scaling factor for how much the score is adjusted upwards\
                 for having common prefixes. Defaults to 0.1.
+            prefix_len (int): Length of common prefix. Defaults to 4.
 
         Returns:
             float: Jaro Winkler Similarity.
@@ -562,7 +638,24 @@ class Core(object):
             >>> tk.jaro_winkler_similarity('hello', 'world')
             0.4666666666666666
         """
-        return jaro_winkler_distance(s1, s2, threshold, scaling_factor)
+        return jaro_winkler_distance(s1, s2, threshold, scaling_factor, prefix_len)
+
+    def dice_similarity(self, set1, set2):
+        """
+        The Dice similarity score is defined as twice the intersection of two sets divided by sum of lengths.
+
+        Args:
+            set1 (set): Set 1.
+            set2 (set): Set 2.
+
+        Returns:
+            float: Dice similarity.
+
+        Examples:
+            >>> tk.dice_similarity(set(['a', 'b']), set(['c', 'b']))
+            0.5
+        """
+        return dice_similarity(set1, set2)
 
     def jaccard_index_similarity(self, set1, set2):
         """
@@ -595,6 +688,54 @@ class Core(object):
             int: Jaccard Index Distance.
         """
         return jaccard_index_distance(set1, set2)
+
+    def hybrid_jaccard_similarity(self, set1, set2, threshold=0.5, function=None, parameters={}):
+        """
+        Generalized Jaccard Measure.
+
+        Args:
+            set1 (set): Set 1.
+            set2 (set): Set 2.
+            threshold (float): The threshold to keep the score of similarity function. \
+                Defaults to 0.5.
+            function (function): The reference of a similarity measure function. \
+                It should return the value in range [0,1]. If it is set to None, \
+                `jaro_winlker_similarity` will be used.
+            parameters (dict): Other parameters of function. Defaults to empty dict.
+
+        Returns:
+            float: Hybrid Jaccard similarity.
+
+        Examples:
+            >>> def hybrid_test_similarity(m ,n):
+            ...     ...
+            >>> tk.hybrid_jaccard_similarity(set(['a','b','c']), set(['p', 'q']), function=hybrid_test_similarity)
+            0.533333333333
+        """
+
+        if not function:
+            function = self.jaro_winkler_similarity
+        return hybrid_jaccard_similarity(set1, set2, threshold, function, parameters)
+
+    def monge_elkan_similarity(self, bag1, bag2, function=None, parameters={}):
+        """
+        Monge Elkan similarity.
+
+        Args:
+            bag1 (list): Bag 1.
+            bag2 (list): Bag 2.
+            function (function): The reference of a similarity measure function. \
+                It should return the value in range [0,1]. If it is set to None, \
+                `jaro_winlker_similarity` will be used.
+            parameters (dict): Other parameters of function. Defaults to empty dict.
+
+        Returns:
+            float: Monge Elkan similarity.
+        """
+
+        if not function:
+            function = self.jaro_winkler_similarity
+        return monge_elkan_similarity(bag1, bag2, function, parameters)
 
     def cosine_similarity(self, set1, set2):
         """
