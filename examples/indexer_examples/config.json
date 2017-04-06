@@ -1,0 +1,10 @@
+{
+	"method": 
+		{
+			"type": "q-gram",
+			"q": 3
+		},
+	"json_path": ["name[*].value"],
+	"id_path": "uri[*].value"
+	
+}
